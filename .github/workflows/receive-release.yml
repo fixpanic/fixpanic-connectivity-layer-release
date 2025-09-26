@@ -71,7 +71,11 @@ jobs:
     if: github.event.client_payload.artifacts
     strategy:
       matrix:
-        platform: ${{ fromJson(keys(github.event.client_payload.artifacts)) }}
+        include:
+          - platform: linux-amd64
+          - platform: linux-arm64
+          - platform: darwin-amd64
+          - platform: windows-amd64
 
     steps:
       - name: Download artifact from private repo
