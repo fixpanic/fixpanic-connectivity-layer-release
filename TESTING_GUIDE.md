@@ -19,21 +19,24 @@ sudo apt install gh
 
 ### **Trigger Workflow with Enhanced Payload**
 ```bash
-# Test with enhanced payload (if private repo sends this format)
+# Test with enhanced payload (with artifact URLs for GitHub REST API)
 gh api repos/fixpanic/fixpanic-connectivity-layer-release/dispatches \
   --field event_type="create-release" \
-  --field client_payload[tag]="v1.0.9-test" \
-  --field client_payload[ref]="refs/tags/v1.0.9-test" \
-  --field client_payload[run_id]="123456789" \
-  --field client_payload[artifacts][linux-amd64]="fixpanic-agent-linux-amd64" \
-  --field client_payload[artifacts][linux-arm64]="fixpanic-agent-linux-arm64" \
-  --field client_payload[artifacts][darwin-amd64]="fixpanic-agent-darwin-amd64" \
-  --field client_payload[artifacts][windows-amd64]="fixpanic-agent-windows-amd64"
+  --field client_payload[tag]="v1.0.9-test-enhanced" \
+  --field client_payload[ref]="refs/tags/v1.0.9-test-enhanced" \
+  --field client_payload[artifacts][linux-amd64][name]="fixpanic-agent-linux-amd64" \
+  --field client_payload[artifacts][linux-amd64][download_url]="https://api.github.com/repos/fixpanic/fixpanic-connectivity-layer/actions/artifacts/123456789/zip" \
+  --field client_payload[artifacts][linux-arm64][name]="fixpanic-agent-linux-arm64" \
+  --field client_payload[artifacts][linux-arm64][download_url]="https://api.github.com/repos/fixpanic/fixpanic-connectivity-layer/actions/artifacts/123456790/zip" \
+  --field client_payload[artifacts][darwin-amd64][name]="fixpanic-agent-darwin-amd64" \
+  --field client_payload[artifacts][darwin-amd64][download_url]="https://api.github.com/repos/fixpanic/fixpanic-connectivity-layer/actions/artifacts/123456791/zip" \
+  --field client_payload[artifacts][windows-amd64][name]="fixpanic-agent-windows-amd64" \
+  --field client_payload[artifacts][windows-amd64][download_url]="https://api.github.com/repos/fixpanic/fixpanic-connectivity-layer/actions/artifacts/123456792/zip"
 ```
 
 ### **Trigger with Minimal Payload** (Fallback test)
 ```bash
-# Test with minimal payload (fallback scenario)
+# Test with minimal payload (creates release only, no artifacts)
 gh api repos/fixpanic/fixpanic-connectivity-layer-release/dispatches \
   --field event_type="create-release" \
   --field client_payload[tag]="v1.0.9-test-minimal" \
@@ -45,7 +48,7 @@ gh api repos/fixpanic/fixpanic-connectivity-layer-release/dispatches \
 ### **Get GitHub Token**
 Make sure you have a GitHub token with `repo` scope.
 
-### **Enhanced Payload Test**
+### **Enhanced Payload Test (with Artifact URLs)**
 ```bash
 curl -X POST \
   -H "Accept: application/vnd.github+json" \
@@ -55,14 +58,25 @@ curl -X POST \
   -d '{
     "event_type": "create-release",
     "client_payload": {
-      "tag": "v1.0.9-test",
-      "ref": "refs/tags/v1.0.9-test",
-      "run_id": "123456789",
+      "tag": "v1.0.9-test-enhanced",
+      "ref": "refs/tags/v1.0.9-test-enhanced",
       "artifacts": {
-        "linux-amd64": "fixpanic-agent-linux-amd64",
-        "linux-arm64": "fixpanic-agent-linux-arm64",
-        "darwin-amd64": "fixpanic-agent-darwin-amd64",
-        "windows-amd64": "fixpanic-agent-windows-amd64"
+        "linux-amd64": {
+          "name": "fixpanic-agent-linux-amd64",
+          "download_url": "https://api.github.com/repos/fixpanic/fixpanic-connectivity-layer/actions/artifacts/123456789/zip"
+        },
+        "linux-arm64": {
+          "name": "fixpanic-agent-linux-arm64",
+          "download_url": "https://api.github.com/repos/fixpanic/fixpanic-connectivity-layer/actions/artifacts/123456790/zip"
+        },
+        "darwin-amd64": {
+          "name": "fixpanic-agent-darwin-amd64",
+          "download_url": "https://api.github.com/repos/fixpanic/fixpanic-connectivity-layer/actions/artifacts/123456791/zip"
+        },
+        "windows-amd64": {
+          "name": "fixpanic-agent-windows-amd64",
+          "download_url": "https://api.github.com/repos/fixpanic/fixpanic-connectivity-layer/actions/artifacts/123456792/zip"
+        }
       }
     }
   }'
@@ -103,7 +117,7 @@ curl -X POST \
 GITHUB_TOKEN="your_token_here"
 
 # Test with different payload formats
-echo "Testing with enhanced payload..."
+echo "Testing with enhanced payload (GitHub REST API approach)..."
 curl -X POST \
   -H "Accept: application/vnd.github+json" \
   -H "Authorization: token $GITHUB_TOKEN" \
@@ -114,12 +128,23 @@ curl -X POST \
     "client_payload": {
       "tag": "v1.0.9-test-enhanced",
       "ref": "refs/tags/v1.0.9-test-enhanced",
-      "run_id": "123456789",
       "artifacts": {
-        "linux-amd64": "fixpanic-agent-linux-amd64",
-        "linux-arm64": "fixpanic-agent-linux-arm64",
-        "darwin-amd64": "fixpanic-agent-darwin-amd64",
-        "windows-amd64": "fixpanic-agent-windows-amd64"
+        "linux-amd64": {
+          "name": "fixpanic-agent-linux-amd64",
+          "download_url": "https://api.github.com/repos/fixpanic/fixpanic-connectivity-layer/actions/artifacts/123456789/zip"
+        },
+        "linux-arm64": {
+          "name": "fixpanic-agent-linux-arm64",
+          "download_url": "https://api.github.com/repos/fixpanic/fixpanic-connectivity-layer/actions/artifacts/123456790/zip"
+        },
+        "darwin-amd64": {
+          "name": "fixpanic-agent-darwin-amd64",
+          "download_url": "https://api.github.com/repos/fixpanic/fixpanic-connectivity-layer/actions/artifacts/123456791/zip"
+        },
+        "windows-amd64": {
+          "name": "fixpanic-agent-windows-amd64",
+          "download_url": "https://api.github.com/repos/fixpanic/fixpanic-connectivity-layer/actions/artifacts/123456792/zip"
+        }
       }
     }
   }'
@@ -154,8 +179,8 @@ chmod +x test-dispatch.sh
 1. Go to: `https://github.com/fixpanic/fixpanic-connectivity-layer-release/actions`
 2. Look for **"Receive Release"** workflow runs
 3. Click on the latest run to see detailed logs
-4. Check the **"Debug received payload"** step to see what was received
-5. Monitor the **"Download artifact using GitHub CLI"** steps for success/failure
+4. Check the **"Debug received payload"** step to see artifact URLs
+5. Monitor the **"Download artifact from private repo via API"** steps for success/failure
 
 ### **Check Final Release**
 1. Go to: `https://github.com/fixpanic/fixpanic-connectivity-layer-release/releases`
@@ -173,8 +198,8 @@ chmod +x test-dispatch.sh
 
 When successful, you should see:
 - ✅ Workflow triggered and running
-- ✅ Debug logs showing received payload
-- ✅ GitHub CLI downloading artifacts from private repository
+- ✅ Debug logs showing received payload with artifact URLs
+- ✅ GitHub REST API downloading artifacts from private repository
 - ✅ Professional release created with all platform binaries
 - ✅ Checksums and manifest files generated
 - ✅ Success confirmation in workflow logs
@@ -182,9 +207,9 @@ When successful, you should see:
 ## **🚀 Next Steps After Testing**
 
 Once the manual testing is successful:
-1. **Update private repository** to send the enhanced payload
+1. **Update private repository** to send the enhanced payload with artifact URLs
 2. **Test with real tag** from private repository
 3. **Monitor both workflows** for complete end-to-end success
 4. **Document the working configuration** for future reference
 
-The manual testing approach allows you to validate the implementation without needing to trigger new workflows in the private repository! 🎉
+The manual testing approach allows you to validate the GitHub REST API implementation without needing to trigger new workflows in the private repository! 🎉

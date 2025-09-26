@@ -32,116 +32,101 @@ jobs:
         include:
           - goos: linux
             goarch: amd64
-            artifact: fixpanic-agent-linux-amd64
+            artifact_key: linux-amd64
           - goos: linux
             goarch: arm64
-            artifact: fixpanic-agent-linux-arm64
+            artifact_key: linux-arm64
           - goos: darwin
             goarch: amd64
-            artifact: fixpanic-agent-darwin-amd64
+            artifact_key: darwin-amd64
           - goos: windows
             goarch: amd64
-            artifact: fixpanic-agent-windows-amd64
+            artifact_key: windows-amd64
     
     steps:
-      - name: Install GitHub CLI
-        run: |
-          # GitHub CLI should already be installed, but let's ensure it's available
-          gh --version || (curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null && sudo apt update && sudo apt install gh -y)
-      
       - name: Debug received payload
         run: |
           echo "=== DEBUG: Received payload ==="
           echo "Full payload: ${{ toJson(github.event.client_payload) }}"
           echo "Tag: ${{ github.event.client_payload.tag }}"
           echo "Ref: ${{ github.event.client_payload.ref }}"
-          echo "Run ID: ${{ github.event.client_payload.run_id }}"
+          echo "Artifacts: ${{ toJson(github.event.client_payload.artifacts) }}"
           echo "==============================="
       
-      - name: Download artifact using GitHub CLI
-        run: |
-          echo "Downloading ${{ matrix.artifact }} from private repository..."
-          
-          # Create download directory
-          mkdir -p binaries
-          
-          # Determine the run ID to use
-          if [ -n "${{ github.event.client_payload.run_id }}" ]; then
-            RUN_ID="${{ github.event.client_payload.run_id }}"
-            echo "Using provided run ID: $RUN_ID"
-          else
-            # Fallback: Get the latest successful run ID
-            echo "No run_id provided, getting latest successful run..."
-            RUN_ID=$(gh run list --repo fixpanic/fixpanic-connectivity-layer \
-              --workflow="public-release.yml" \
-              --json databaseId,conclusion \
-              --jq '.[] | select(.conclusion=="success") | .databaseId' | head -1)
-            echo "Using latest run ID: $RUN_ID"
-          fi
-          
-          if [ -z "$RUN_ID" ]; then
-            echo "❌ No successful runs found in private repository"
-            exit 1
-          fi
-          
-          # Download the specific artifact
-          echo "Downloading artifact ${{ matrix.artifact }} from run $RUN_ID..."
-          gh run download "$RUN_ID" \
-            --repo fixpanic/fixpanic-connectivity-layer \
-            --name "${{ matrix.artifact }}" \
-            --dir ./binaries/ || echo "Artifact ${{ matrix.artifact }} not found, trying pattern download..."
-          
-          # If specific name download fails, try pattern download
-          if [ ! -f "./binaries/${{ matrix.artifact }}" ] && [ ! -f "./binaries/${{ matrix.artifact }}.exe" ]; then
-            echo "Trying pattern download for ${{ matrix.artifact }}..."
-            gh run download "$RUN_ID" \
-              --repo fixpanic/fixpanic-connectivity-layer \
-              --dir ./binaries/ \
-              --pattern "${{ matrix.artifact }}*" || true
-          fi
-        env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_PAT }}
-      
-      - name: Verify and prepare binary
-        run: |
-          echo "Verifying downloaded binary..."
-          ls -la ./binaries/
-          
-          # Find the actual binary file
-          BINARY_FILE=$(find ./binaries -name "${{ matrix.artifact }}*" -type f | head -1)
-          if [ -z "$BINARY_FILE" ]; then
-            echo "❌ Binary not found: ${{ matrix.artifact }}"
-            echo "Available files:"
-            find ./binaries -type f
-            exit 1
-          fi
-          
-          echo "✅ Binary found: $BINARY_FILE"
-          
-          # Get just the filename
-          BINARY_NAME=$(basename "$BINARY_FILE")
-          
-          # Rename to standard format if needed
-          FINAL_NAME="${{ matrix.artifact }}"
-          if [ "${{ matrix.goos }}" = "windows" ]; then
-            FINAL_NAME="${FINAL_NAME}.exe"
-          fi
-          
-          # Copy/rename to final location
-          cp "$BINARY_FILE" "./binaries/${FINAL_NAME}"
-          
-          echo "Final binary: ./binaries/${FINAL_NAME}"
-          ls -la ./binaries/
-          
-          # Verify it's executable (for non-Windows)
-          if [ "${{ matrix.goos }}" != "windows" ]; then
-            chmod +x "./binaries/${FINAL_NAME}"
-          fi
+      - name: Download artifact from private repo via API
+        uses: actions/github-script@v7
+        id: download-artifact
+        with:
+          github-token: ${{ secrets.RELEASE_PAT }}
+          script: |
+            const artifactKey = '${{ matrix.artifact_key }}';
+            const artifacts = github.event.client_payload.artifacts;
+            
+            if (!artifacts || !artifacts[artifactKey]) {
+              core.setFailed(`No artifact info found for key: ${artifactKey}`);
+              return;
+            }
+            
+            const artifactInfo = artifacts[artifactKey];
+            console.log(`Processing ${artifactInfo.name} from ${artifactInfo.download_url}`);
+            
+            // Download the artifact zip file
+            const response = await github.request(artifactInfo.download_url, {
+              headers: {
+                'Authorization': `token ${process.env.GITHUB_TOKEN}`,
+                'Accept': 'application/vnd.github.v3+json'
+              }
+            });
+            
+            const fs = require('fs');
+            const path = require('path');
+            
+            // Create binaries directory
+            const binariesDir = './binaries';
+            if (!fs.existsSync(binariesDir)) {
+              fs.mkdirSync(binariesDir, { recursive: true });
+            }
+            
+            // Save the zip file
+            const zipPath = path.join(binariesDir, `${artifactInfo.name}.zip`);
+            fs.writeFileSync(zipPath, Buffer.from(response.data));
+            
+            console.log(`✅ Downloaded ${artifactInfo.name}.zip`);
+            
+            // Extract the zip file
+            const { execSync } = require('child_process');
+            execSync(`cd ${binariesDir} && unzip -o ${artifactInfo.name}.zip`);
+            
+            // Remove the zip file
+            fs.unlinkSync(zipPath);
+            
+            console.log(`✅ Extracted ${artifactInfo.name}`);
+            
+            // List contents for debugging
+            const files = fs.readdirSync(binariesDir);
+            console.log('Files in binaries directory:', files);
+            
+            // Find the actual binary file
+            const binaryFile = files.find(f => f.includes(artifactInfo.name));
+            if (binaryFile) {
+              console.log(`✅ Found binary: ${binaryFile}`);
+              
+              // Make executable (for non-Windows)
+              if ('${{ matrix.goos }}' !== 'windows') {
+                fs.chmodSync(path.join(binariesDir, binaryFile), '755');
+              }
+              
+              // Store the binary path for next step
+              core.setOutput('binary_path', path.join(binariesDir, binaryFile));
+              core.setOutput('binary_name', binaryFile);
+            } else {
+              core.setFailed(`Binary file not found in extracted contents`);
+            }
       
       - name: Upload release asset
         uses: softprops/action-gh-release@v2
         with:
-          files: ./binaries/${{ matrix.artifact }}*
+          files: ${{ steps.download-artifact.outputs.binary_path }}
           tag_name: ${{ github.event.client_payload.tag }}
           name: ${{ github.event.client_payload.tag }}
         env:
@@ -151,88 +136,88 @@ jobs:
     needs: download-and-release
     runs-on: ubuntu-latest
     steps:
-      - name: Install GitHub CLI
-        run: |
-          gh --version || (curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null && sudo apt update && sudo apt install gh -y)
-      
-      - name: Download all artifacts using GitHub CLI
-        run: |
-          echo "Downloading all artifacts from private repository..."
-          
-          # Create download directory
-          mkdir -p release-assets
-          
-          # Determine the run ID to use
-          if [ -n "${{ github.event.client_payload.run_id }}" ]; then
-            RUN_ID="${{ github.event.client_payload.run_id }}"
-            echo "Using provided run ID: $RUN_ID"
-          else
-            # Fallback: Get the latest successful run ID
-            echo "No run_id provided, getting latest successful run..."
-            RUN_ID=$(gh run list --repo fixpanic/fixpanic-connectivity-layer \
-              --workflow="public-release.yml" \
-              --json databaseId,conclusion \
-              --jq '.[] | select(.conclusion=="success") | .databaseId' | head -1)
-            echo "Using latest run ID: $RUN_ID"
-          fi
-          
-          if [ -z "$RUN_ID" ]; then
-            echo "❌ No successful runs found in private repository"
-            exit 1
-          fi
-          
-          # Download all artifacts
-          gh run download "$RUN_ID" \
-            --repo fixpanic/fixpanic-connectivity-layer \
-            --dir ./release-assets/ || echo "Some artifacts may not be available"
-        env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_PAT }}
-      
-      - name: Create release bundle
-        run: |
-          mkdir -p release-bundle
-          
-          # Find and copy all fixpanic-agent binaries
-          find ./release-assets -name "fixpanic-agent-*" -type f -exec cp {} ./release-bundle/ \;
-          
-          cd release-bundle
-          
-          # Check if we have any binaries
-          if [ -z "$(ls -A)" ]; then
-            echo "❌ No binaries found in release-assets"
-            echo "Contents of release-assets:"
-            find ../release-assets -type f
-            exit 1
-          fi
-          
-          # Create checksums file
-          sha256sum fixpanic-agent-* > checksums.txt
-          
-          # Create manifest file
-          cat > manifest.txt << EOF
-          FixPanic Agent Release Bundle
-          =============================
-          
-          Release: ${{ github.event.client_payload.tag }}
-          Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-          
-          This release contains the following binaries:
-          
-          $(ls -la fixpanic-agent-*)
-          
-          Installation Instructions:
-          ----------------------------
-          
-          1. Download the appropriate binary for your platform
-          2. Make it executable: chmod +x fixpanic-agent-<os>-<arch>
-          3. Run: ./fixpanic-agent-<os>-<arch> --help
-          
-          Verify integrity using the checksums.txt file.
-          
-          EOF
-          
-          ls -la
-      
+      - name: Download all artifacts via API
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.RELEASE_PAT }}
+          script: |
+            const fs = require('fs');
+            const { execSync } = require('child_process');
+            
+            // Create release bundle directory
+            const bundleDir = 'release-bundle';
+            if (!fs.existsSync(bundleDir)) {
+              fs.mkdirSync(bundleDir, { recursive: true });
+            }
+            
+            // Download all artifacts
+            const artifacts = github.event.client_payload.artifacts;
+            const binariesDir = './binaries';
+            
+            if (!fs.existsSync(binariesDir)) {
+              console.log('⚠️ Binaries directory not found, creating from artifacts');
+              fs.mkdirSync(binariesDir, { recursive: true });
+              
+              // Download all artifacts again for the bundle
+              for (const [key, artifactInfo] of Object.entries(artifacts)) {
+                console.log(`Downloading ${artifactInfo.name} for bundle...`);
+                
+                const response = await github.request(artifactInfo.download_url, {
+                  headers: {
+                    'Authorization': `token ${process.env.GITHUB_TOKEN}`,
+                    'Accept': 'application/vnd.github.v3+json'
+                  }
+                });
+                
+                // Save and extract
+                const zipPath = path.join(binariesDir, `${artifactInfo.name}.zip`);
+                fs.writeFileSync(zipPath, Buffer.from(response.data));
+                execSync(`cd ${binariesDir} && unzip -o ${artifactInfo.name}.zip`);
+                fs.unlinkSync(zipPath);
+              }
+            }
+            
+            // Copy binaries to bundle directory
+            const files = fs.readdirSync(binariesDir);
+            files.forEach(file => {
+              if (fs.statSync(path.join(binariesDir, file)).isFile()) {
+                fs.copyFileSync(
+                  path.join(binariesDir, file),
+                  path.join(bundleDir, file)
+                );
+              }
+            });
+            
+            // Create checksums file
+            const checksums = execSync(`cd ${bundleDir} && sha256sum fixpanic-agent-*`, { encoding: 'utf8' });
+            fs.writeFileSync(path.join(bundleDir, 'checksums.txt'), checksums);
+            
+            // Create manifest file
+            const manifest = `FixPanic Agent Release Bundle
+            ========================================
+            
+            Release: ${{ github.event.client_payload.tag }}
+            Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+            
+            This release contains the following binaries:
+            
+            ${files.filter(f => f.includes('fixpanic-agent')).join('\n')}
+            
+            Installation Instructions:
+            ----------------------------
+            
+            1. Download the appropriate binary for your platform
+            2. Make it executable: chmod +x fixpanic-agent-<os>-<arch>
+            3. Run: ./fixpanic-agent-<os>-<arch> --help
+            
+            Verify integrity using the checksums.txt file.
+            `;
+            
+            fs.writeFileSync(path.join(bundleDir, 'manifest.txt'), manifest);
+            
+            console.log('✅ Release bundle created successfully');
+            console.log('Files in bundle:', fs.readdirSync(bundleDir));
+
       - name: Upload release bundle
         uses: softprops/action-gh-release@v2
         with:
@@ -255,7 +240,7 @@ jobs:
           echo ""
           echo "📦 Binaries downloaded from private repository:"
           echo "  - Linux AMD64"
-          echo "  - Linux ARM64" 
+          echo "  - Linux ARM64"
           echo "  - Darwin AMD64"
           echo "  - Windows AMD64"
           echo ""
