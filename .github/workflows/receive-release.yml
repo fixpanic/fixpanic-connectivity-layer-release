@@ -1,0 +1,140 @@
+name: Receive Release
+
+on:
+  repository_dispatch:
+    types: [create-release]
+
+jobs:
+  download-and-release:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            artifact: fixpanic-agent-linux-amd64
+          - goos: linux
+            goarch: arm64
+            artifact: fixpanic-agent-linux-arm64
+          - goos: darwin
+            goarch: amd64
+            artifact: fixpanic-agent-darwin-amd64
+          - goos: windows
+            goarch: amd64
+            artifact: fixpanic-agent-windows-amd64
+    
+    steps:
+      - name: Download artifact from private repo
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ./binaries/
+          run-id: ${{ github.event.client_payload.run_id }}
+          repository: fixpanic/fixpanic-connectivity-layer
+          github-token: ${{ secrets.RELEASE_PAT }}
+      
+      - name: Verify binary
+        run: |
+          ls -la ./binaries/
+          if [ -f "./binaries/${{ matrix.artifact }}" ]; then
+            echo "✅ Binary found: ${{ matrix.artifact }}"
+            file "./binaries/${{ matrix.artifact }}"
+          else
+            echo "❌ Binary not found: ${{ matrix.artifact }}"
+            exit 1
+          fi
+      
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ./binaries/${{ matrix.artifact }}*
+          tag_name: ${{ github.event.client_payload.tag }}
+          name: ${{ github.event.client_payload.tag }}
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  create-release-bundle:
+    needs: download-and-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-binaries
+          run-id: ${{ github.event.client_payload.run_id }}
+          repository: fixpanic/fixpanic-connectivity-layer
+          github-token: ${{ secrets.RELEASE_PAT }}
+      
+      - name: Create release bundle
+        run: |
+          mkdir -p release-bundle
+          cd release-binaries
+          for artifact in */*; do
+            if [ -f "$artifact" ]; then
+              cp "$artifact" "../release-bundle/"
+            fi
+          done
+          cd ..
+          
+          # Create checksums file
+          cd release-bundle
+          sha256sum fixpanic-agent-* > checksums.txt
+          
+          # Create manifest file
+          cat > manifest.txt << EOF
+          FixPanic Agent Release Bundle
+          =============================
+          
+          This release contains the following binaries:
+          
+          $(ls -la fixpanic-agent-*)
+          
+          Installation Instructions:
+          ----------------------------
+          
+          1. Download the appropriate binary for your platform
+          2. Make it executable: chmod +x fixpanic-agent-<os>-<arch>
+          3. Run: ./fixpanic-agent-<os>-<arch> --help
+          
+          Verify integrity using the checksums.txt file.
+          
+          EOF
+          
+          ls -la
+      
+      - name: Upload release bundle
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-bundle/fixpanic-agent-*
+            release-bundle/checksums.txt
+            release-bundle/manifest.txt
+          tag_name: ${{ github.event.client_payload.tag }}
+          name: ${{ github.event.client_payload.tag }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release-summary:
+    needs: [download-and-release, create-release-bundle]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Release Summary
+        run: |
+          echo "✅ FixPanic Agent Release Complete!"
+          echo ""
+          echo "📦 Binaries downloaded and released for:"
+          echo "  - Linux AMD64"
+          echo "  - Linux ARM64" 
+          echo "  - Darwin AMD64"
+          echo "  - Windows AMD64"
+          echo ""
+          echo "🔍 Release available at:"
+          echo "  https://github.com/${{ github.repository }}/releases/tag/${{ github.event.client_payload.tag }}"
+          echo ""
+          echo "📋 Release bundle includes:"
+          echo "  - Individual platform binaries"
+          echo "  - Checksums for integrity verification"
+          echo "  - Installation manifest with instructions"
