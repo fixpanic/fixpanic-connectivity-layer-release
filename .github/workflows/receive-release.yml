@@ -44,19 +44,61 @@ jobs:
             artifact: fixpanic-agent-windows-amd64
     
     steps:
-      - name: Download artifact from private repo using GitHub CLI
+      - name: Install GitHub CLI
+        run: |
+          # GitHub CLI should already be installed, but let's ensure it's available
+          gh --version || (curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null && sudo apt update && sudo apt install gh -y)
+      
+      - name: Debug received payload
+        run: |
+          echo "=== DEBUG: Received payload ==="
+          echo "Full payload: ${{ toJson(github.event.client_payload) }}"
+          echo "Tag: ${{ github.event.client_payload.tag }}"
+          echo "Ref: ${{ github.event.client_payload.ref }}"
+          echo "Run ID: ${{ github.event.client_payload.run_id }}"
+          echo "==============================="
+      
+      - name: Download artifact using GitHub CLI
         run: |
           echo "Downloading ${{ matrix.artifact }} from private repository..."
           
           # Create download directory
           mkdir -p binaries
           
-          # Download artifact using GitHub CLI
-          gh run download ${{ github.event.client_payload.run_id }} \
+          # Determine the run ID to use
+          if [ -n "${{ github.event.client_payload.run_id }}" ]; then
+            RUN_ID="${{ github.event.client_payload.run_id }}"
+            echo "Using provided run ID: $RUN_ID"
+          else
+            # Fallback: Get the latest successful run ID
+            echo "No run_id provided, getting latest successful run..."
+            RUN_ID=$(gh run list --repo fixpanic/fixpanic-connectivity-layer \
+              --workflow="public-release.yml" \
+              --json databaseId,conclusion \
+              --jq '.[] | select(.conclusion=="success") | .databaseId' | head -1)
+            echo "Using latest run ID: $RUN_ID"
+          fi
+          
+          if [ -z "$RUN_ID" ]; then
+            echo "❌ No successful runs found in private repository"
+            exit 1
+          fi
+          
+          # Download the specific artifact
+          echo "Downloading artifact ${{ matrix.artifact }} from run $RUN_ID..."
+          gh run download "$RUN_ID" \
             --repo fixpanic/fixpanic-connectivity-layer \
-            --name ${{ matrix.artifact }} \
-            --dir ./binaries/ \
-            --pattern "${{ matrix.artifact }}*"
+            --name "${{ matrix.artifact }}" \
+            --dir ./binaries/ || echo "Artifact ${{ matrix.artifact }} not found, trying pattern download..."
+          
+          # If specific name download fails, try pattern download
+          if [ ! -f "./binaries/${{ matrix.artifact }}" ] && [ ! -f "./binaries/${{ matrix.artifact }}.exe" ]; then
+            echo "Trying pattern download for ${{ matrix.artifact }}..."
+            gh run download "$RUN_ID" \
+              --repo fixpanic/fixpanic-connectivity-layer \
+              --dir ./binaries/ \
+              --pattern "${{ matrix.artifact }}*" || true
+          fi
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PAT }}
       
@@ -69,25 +111,32 @@ jobs:
           BINARY_FILE=$(find ./binaries -name "${{ matrix.artifact }}*" -type f | head -1)
           if [ -z "$BINARY_FILE" ]; then
             echo "❌ Binary not found: ${{ matrix.artifact }}"
+            echo "Available files:"
+            find ./binaries -type f
             exit 1
           fi
           
           echo "✅ Binary found: $BINARY_FILE"
           
-          # Rename to standard format if needed
-          if [[ "$BINARY_FILE" != *"${{ matrix.artifact }}" ]]; then
-            mv "$BINARY_FILE" "./binaries/${{ matrix.artifact }}"
-          fi
+          # Get just the filename
+          BINARY_NAME=$(basename "$BINARY_FILE")
           
-          # Add .exe extension for Windows
+          # Rename to standard format if needed
           FINAL_NAME="${{ matrix.artifact }}"
           if [ "${{ matrix.goos }}" = "windows" ]; then
             FINAL_NAME="${FINAL_NAME}.exe"
-            mv "./binaries/${{ matrix.artifact }}" "./binaries/${FINAL_NAME}" 2>/dev/null || true
           fi
           
-          echo "Final binary name: $FINAL_NAME"
+          # Copy/rename to final location
+          cp "$BINARY_FILE" "./binaries/${FINAL_NAME}"
+          
+          echo "Final binary: ./binaries/${FINAL_NAME}"
           ls -la ./binaries/
+          
+          # Verify it's executable (for non-Windows)
+          if [ "${{ matrix.goos }}" != "windows" ]; then
+            chmod +x "./binaries/${FINAL_NAME}"
+          fi
       
       - name: Upload release asset
         uses: softprops/action-gh-release@v2
@@ -102,6 +151,10 @@ jobs:
     needs: download-and-release
     runs-on: ubuntu-latest
     steps:
+      - name: Install GitHub CLI
+        run: |
+          gh --version || (curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg && sudo chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null && sudo apt update && sudo apt install gh -y)
+      
       - name: Download all artifacts using GitHub CLI
         run: |
           echo "Downloading all artifacts from private repository..."
@@ -109,10 +162,29 @@ jobs:
           # Create download directory
           mkdir -p release-assets
           
+          # Determine the run ID to use
+          if [ -n "${{ github.event.client_payload.run_id }}" ]; then
+            RUN_ID="${{ github.event.client_payload.run_id }}"
+            echo "Using provided run ID: $RUN_ID"
+          else
+            # Fallback: Get the latest successful run ID
+            echo "No run_id provided, getting latest successful run..."
+            RUN_ID=$(gh run list --repo fixpanic/fixpanic-connectivity-layer \
+              --workflow="public-release.yml" \
+              --json databaseId,conclusion \
+              --jq '.[] | select(.conclusion=="success") | .databaseId' | head -1)
+            echo "Using latest run ID: $RUN_ID"
+          fi
+          
+          if [ -z "$RUN_ID" ]; then
+            echo "❌ No successful runs found in private repository"
+            exit 1
+          fi
+          
           # Download all artifacts
-          gh run download ${{ github.event.client_payload.run_id }} \
+          gh run download "$RUN_ID" \
             --repo fixpanic/fixpanic-connectivity-layer \
-            --dir ./release-assets/
+            --dir ./release-assets/ || echo "Some artifacts may not be available"
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PAT }}
       
@@ -120,10 +192,18 @@ jobs:
         run: |
           mkdir -p release-bundle
           
-          # Move all binaries to release-bundle
+          # Find and copy all fixpanic-agent binaries
           find ./release-assets -name "fixpanic-agent-*" -type f -exec cp {} ./release-bundle/ \;
           
           cd release-bundle
+          
+          # Check if we have any binaries
+          if [ -z "$(ls -A)" ]; then
+            echo "❌ No binaries found in release-assets"
+            echo "Contents of release-assets:"
+            find ../release-assets -type f
+            exit 1
+          fi
           
           # Create checksums file
           sha256sum fixpanic-agent-* > checksums.txt
@@ -166,7 +246,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   release-summary:
-    needs: [create-release, download-and-release, create-release-bundle]
+    needs: [download-and-release, create-release-bundle]
     runs-on: ubuntu-latest
     steps:
       - name: Release Summary
